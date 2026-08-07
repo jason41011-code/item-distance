@@ -3,20 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>AI 物件距離偵測系統</title>
-    <!-- 載入 TensorFlow.js 與 COCO-SSD 物件偵測模型 -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <title>AI 指定物件距離偵測</title>
+    <!-- 指定穩定版本之 TensorFlow.js 與 COCO-SSD -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #121212; color: #fff; margin: 0; padding: 15px; }
         h1 { font-size: 1.3rem; margin: 10px 0 5px 0; color: #00ffcc; }
         .canvas-container { position: relative; width: 100%; max-width: 480px; margin: 10px auto; background: #000; border-radius: 12px; overflow: hidden; border: 2px solid #00ffcc; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
         video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0.01; pointer-events: none; z-index: 1; }
         canvas { position: relative; width: 100%; height: auto; display: block; z-index: 2; }
-        #status { font-size: 0.95rem; font-weight: bold; color: #ffcc00; margin: 5px 0; padding: 10px; background: rgba(255,204,0,0.15); border: 1px solid #ffcc00; border-radius: 8px; }
+        #status { font-size: 0.95rem; font-weight: bold; color: #ffcc00; margin: 5px 0; padding: 10px; background: rgba(255,204,0,0.15); border: 1px solid #ffcc00; border-radius: 8px; word-break: break-all; }
         #status.ready { color: #00ffcc; background: rgba(0,255,204,0.1); border-color: #00ffcc; }
         .control-panel { margin: 10px 0; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
-        select, input { padding: 8px 12px; border-radius: 8px; border: 1px solid #00ffcc; background: #222; color: #fff; font-size: 0.9rem; }
+        select { padding: 8px 12px; border-radius: 8px; border: 1px solid #00ffcc; background: #222; color: #fff; font-size: 0.9rem; }
         .btn-group { display: flex; justify-content: center; gap: 10px; margin-top: 10px; }
         .btn { background: #00ffcc; color: #121212; border: none; padding: 12px 20px; font-size: 1rem; font-weight: bold; border-radius: 25px; cursor: pointer; }
         .btn-calibrate { background: #ffcc00; box-shadow: 0 2px 8px rgba(255,204,0,0.4); }
@@ -25,15 +25,15 @@
 <body>
 
     <h1>AI 指定物件距離偵測</h1>
-    <div id="status">⏳ 正在載入 AI 物件偵測模型...</div>
+    <div id="status">⏳ 正在載入 AI 模型...</div>
 
     <div class="control-panel">
         <label>偵測目標：
             <select id="targetSelect">
-                <option value="cell phone" data-width="7.5">📱 手機 (預設寬度 7.5cm)</option>
-                <option value="bottle" data-width="6.5">🍾 寶特瓶 (預設寬度 6.5cm)</option>
-                <option value="cup" data-width="8.0">☕ 馬克杯 (預設寬度 8.0cm)</option>
-                <option value="book" data-width="15.0">📖 書本 (預設寬度 15.0cm)</option>
+                <option value="cell phone" data-width="7.5">📱 手機 (寬度 7.5cm)</option>
+                <option value="bottle" data-width="6.5">🍾 寶特瓶 (寬度 6.5cm)</option>
+                <option value="cup" data-width="8.0">☕ 馬克杯 (寬度 8.0cm)</option>
+                <option value="book" data-width="15.0">📖 書本 (寬度 15.0cm)</option>
             </select>
         </label>
     </div>
@@ -59,23 +59,28 @@
 
         let model = null;
         let currentStream = null;
-        let useFacingMode = "environment"; // 測物體預設使用後鏡頭
+        let useFacingMode = "environment";
         let isDetecting = false;
 
         let isCalibrated = false;
         const CALIBRATE_TARGET_CM = 15.0;
-        let focalLength = 600; // 相機預設焦距
+        let focalLength = 600;
         let currentTargetBBoxWidth = 0;
         let smoothDistance = 0;
 
-        // 載入 COCO-SSD AI 模型
-        cocoSsd.load().then(loadedModel => {
-            model = loadedModel;
-            statusText.innerText = "⚠️ 請將物件固定放在 15 公分處進行校正";
-            startCamera();
-        }).catch(err => {
-            statusText.innerText = "❌ 模型載入失敗，請重新整理網頁";
-        });
+        // 初始化與載入模型 (含錯誤重試與輕量化設定)
+        async function initModel() {
+            try {
+                await tf.ready();
+                // 指定載入 mobilenet_v1 輕量模型，解決手機記憶體溢出與下載卡死問題
+                model = await cocoSsd.load({ base: 'mobilenet_v1' });
+                statusText.innerText = "⚠️ 請將物件固定放在 15 公分處進行校正";
+                startCamera();
+            } catch (err) {
+                console.error(err);
+                statusText.innerText = "❌ 模型載入失敗：" + (err.message || "請檢查網路後重新整理");
+            }
+        }
 
         async function startCamera() {
             if (currentStream) {
@@ -84,7 +89,7 @@
 
             try {
                 const constraints = {
-                    video: { facingMode: useFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+                    video: { facingMode: useFacingMode, width: { ideal: 640 }, height: { ideal: 480 } },
                     audio: false
                 };
                 currentStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -100,8 +105,12 @@
         async function detectLoop() {
             if (video.readyState >= 2 && model && !isDetecting) {
                 isDetecting = true;
-                const predictions = await model.detect(video);
-                renderDetections(predictions);
+                try {
+                    const predictions = await model.detect(video);
+                    renderDetections(predictions);
+                } catch (e) {
+                    console.error("Detect Error: ", e);
+                }
                 isDetecting = false;
             }
             requestAnimationFrame(detectLoop);
@@ -119,19 +128,16 @@
             let targetFound = false;
 
             predictions.forEach(prediction => {
-                // 僅處理使用者選擇的物件類別
                 if (prediction.class === selectedTarget) {
                     targetFound = true;
                     const [x, y, width, height] = prediction.bbox;
                     currentTargetBBoxWidth = width;
 
-                    // 繪製目標邊框
                     ctx.strokeStyle = isCalibrated ? '#00ffcc' : '#ffcc00';
                     ctx.lineWidth = 4;
                     ctx.strokeRect(x, y, width, height);
 
                     if (isCalibrated) {
-                        // 估算物理距離 (D = RealWidth * Focal / BBoxWidth)
                         const rawDistance = (realWidth * focalLength) / width;
                         smoothDistance = smoothDistance === 0 ? rawDistance : (smoothDistance * 0.7 + rawDistance * 0.3);
 
@@ -150,15 +156,15 @@
             if (!targetFound) {
                 currentTargetBBoxWidth = 0;
                 smoothDistance = 0;
-                statusText.innerText = `🔍 搜尋「${selectedTarget}」中...`;
+                if (!isCalibrated) {
+                    statusText.innerText = `🔍 搜尋「${selectedTarget}」中...`;
+                }
             }
         }
 
-        // 校正邏輯
         calibrateBtn.addEventListener('click', () => {
             if (currentTargetBBoxWidth > 0) {
                 const realWidth = parseFloat(targetSelect.options[targetSelect.selectedIndex].dataset.width);
-                // 反推鏡頭焦距
                 focalLength = (currentTargetBBoxWidth * CALIBRATE_TARGET_CM) / realWidth;
                 isCalibrated = true;
                 statusText.className = "ready";
@@ -175,6 +181,9 @@
             calibrateBtn.innerText = "🎯 確認 15cm 校正";
             startCamera();
         });
+
+        // 啟動模型載入
+        initModel();
     </script>
 </body>
 </html>
