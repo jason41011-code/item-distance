@@ -64,9 +64,9 @@
         let useFacingMode = "environment";
         let isCvReady = false;
 
-        let isLocked = false;             // 是否已手動鎖定目標
+        let isLocked = false;
         const TARGET_SIZE_CM = 3.5;       // 35mm = 3.5cm
-        const CALIBRATE_DIST_CM = 15.0;  // 基準校正距離 15cm
+        const CALIBRATE_DIST_CM = 15.0;   // 基準校正距離 15cm
         let focalLength = 550;
 
         let targetCenter = { x: 0, y: 0 };
@@ -172,12 +172,12 @@
                             let cnt = contours.get(i);
                             let area = cv.contourArea(cnt);
 
-                            if (area > 200 && area < (canvas.width * canvas.height * 0.4)) {
+                            if (area > 150 && area < (canvas.width * canvas.height * 0.4)) {
                                 let rect = cv.boundingRect(cnt);
                                 let cntCenterX = rect.x + rect.width / 2;
                                 let cntCenterY = rect.y + rect.height / 2;
 
-                                // 搜尋距離上一次目標位置最近的輪廓
+                                // 搜尋距離上一次目標位置最近的輪廓 (穩定追蹤機制)
                                 let distToLast = Math.hypot(cntCenterX - targetCenter.x, cntCenterY - targetCenter.y);
 
                                 if (distToLast < minCenterDist) {
@@ -193,6 +193,7 @@
                             let targetCnt = contours.get(bestIndex);
                             let rect = cv.boundingRect(targetCnt);
 
+                            // 更新目標中心座標供下一幀追蹤使用
                             targetCenter.x = rect.x + rect.width / 2;
                             targetCenter.y = rect.y + rect.height / 2;
 
@@ -227,10 +228,9 @@
             setTimeout(nextFrame, 30);
         }
 
-        // 按鈕邏輯：進行 ROI 鎖定與 15cm 校正
+        // 鎖定按鈕邏輯
         lockBtn.addEventListener('click', () => {
             if (!isLocked) {
-                // 讀取當前 Canvas 中央 160x160 ROI 區域
                 let src = cv.imread('canvasOutput');
                 let hsv = new cv.Mat();
                 let mask = new cv.Mat();
@@ -259,7 +259,7 @@
                 for (let i = 0; i < contours.size(); ++i) {
                     let cnt = contours.get(i);
                     let area = cv.contourArea(cnt);
-                    if (area > maxArea && area > 150) {
+                    if (area > maxArea && area > 100) {
                         maxArea = area;
                         let rect = cv.boundingRect(cnt);
                         roiPixelWidth = Math.max(rect.width, rect.height);
@@ -267,11 +267,12 @@
                     cnt.delete();
                 }
 
+                // 釋放截圖資源
                 src.delete(); hsv.delete(); mask.delete(); contours.delete(); hierarchy.delete(); srcROI.delete(); low.delete(); high.delete();
 
                 if (roiPixelWidth > 0) {
-                    // 根據 15cm 算焦距 f = (w * D) / W
-                    focalLength = (roiPixelWidth * CALIBRATION_DIST_CM = 15.0) / TARGET_SIZE_CM;
+                    // === 核心修正：正確的常數計算語法 ===
+                    focalLength = (roiPixelWidth * CALIBRATE_DIST_CM) / TARGET_SIZE_CM;
                     
                     targetCenter.x = canvas.width / 2;
                     targetCenter.y = canvas.height / 2;
@@ -289,7 +290,6 @@
                     alert("中央對焦框內未感應到 35mm 物件！請將物件確實放在中央框內再按下鎖定。");
                 }
             } else {
-                // 解鎖狀態，重新進入對焦鎖定模式
                 isLocked = false;
                 smoothDistance = 0;
                 statusText.className = "";
