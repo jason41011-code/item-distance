@@ -3,36 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>AI 指定物件距離偵測</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+    <title>35mm 白色幾何體距離偵測</title>
+    <!-- 引入高相容性單執行緒 OpenCV.js -->
+    <script async src="https://docs.opencv.org/4.9.0/opencv.js" type="text/javascript"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #121212; color: #fff; margin: 0; padding: 15px; }
         h1 { font-size: 1.3rem; margin: 10px 0 5px 0; color: #00ffcc; }
         .canvas-container { position: relative; width: 100%; max-width: 480px; margin: 10px auto; background: #000; border-radius: 12px; overflow: hidden; border: 2px solid #00ffcc; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0.01; pointer-events: none; z-index: 1; }
-        canvas { position: relative; width: 100%; height: auto; display: block; z-index: 2; }
+        video { display: none; }
+        canvas { position: relative; width: 100%; height: auto; display: block; }
         #status { font-size: 0.95rem; font-weight: bold; color: #ffcc00; margin: 5px 0; padding: 10px; background: rgba(255,204,0,0.15); border: 1px solid #ffcc00; border-radius: 8px; word-break: break-all; }
         #status.ready { color: #00ffcc; background: rgba(0,255,204,0.1); border-color: #00ffcc; }
         .control-panel { margin: 10px 0; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
-        select { padding: 8px 12px; border-radius: 8px; border: 1px solid #00ffcc; background: #222; color: #fff; font-size: 0.9rem; }
+        select { padding: 8px 12px; border-radius: 8px; border: 1px solid #00ffcc; background: #222; color: #fff; font-size: 0.95rem; font-weight: bold; }
         .btn-group { display: flex; justify-content: center; gap: 10px; margin-top: 10px; }
         .btn { background: #00ffcc; color: #121212; border: none; padding: 12px 20px; font-size: 1rem; font-weight: bold; border-radius: 25px; cursor: pointer; }
         .btn-calibrate { background: #ffcc00; box-shadow: 0 2px 8px rgba(255,204,0,0.4); }
+        .hint { font-size: 0.85rem; color: #aaa; margin-top: 10px; line-height: 1.4; }
     </style>
 </head>
 <body>
 
-    <h1>AI 指定物件距離偵測</h1>
-    <div id="status">⏳ 正在初始化引擎...</div>
+    <h1>35mm 白色幾何體距離偵測</h1>
+    <div id="status">⏳ 正在載入視覺演算法引擎...</div>
 
     <div class="control-panel">
-        <label>偵測目標：
+        <label>選擇目標物件：
             <select id="targetSelect">
-                <option value="cell phone" data-width="7.5">📱 手機 (寬度 7.5cm)</option>
-                <option value="bottle" data-width="6.5">🍾 寶特瓶 (寬度 6.5cm)</option>
-                <option value="cup" data-width="8.0">☕ 馬克杯 (寬度 8.0cm)</option>
-                <option value="book" data-width="15.0">📖 書本 (寬度 15.0cm)</option>
+                <option value="sphere" data-size="3.5">⚪ 白色圓球 (直徑 35mm)</option>
+                <option value="cube" data-size="3.5">🔳 白色立方體 (邊長 35mm)</option>
             </select>
         </label>
     </div>
@@ -47,6 +46,10 @@
         <button class="btn" id="switchBtn">切換鏡頭</button>
     </div>
 
+    <div class="hint">
+        💡 <b>測試提示</b>：請將 35mm 白色物體放置於對比明顯背景（如深色桌面）前，固定在 <b>15 公分</b> 處點擊校正。
+    </div>
+
     <script>
         const video = document.getElementById('videoInput');
         const canvas = document.getElementById('canvasOutput');
@@ -56,38 +59,29 @@
         const calibrateBtn = document.getElementById('calibrateBtn');
         const switchBtn = document.getElementById('switchBtn');
 
-        let model = null;
         let currentStream = null;
-        let useFacingMode = "environment";
-        let isDetecting = false;
+        let useFacingMode = "environment"; // 預設使用後鏡頭
+        let isCvReady = false;
 
         let isCalibrated = false;
-        const CALIBRATE_TARGET_CM = 15.0;
-        let focalLength = 600;
-        let currentTargetBBoxWidth = 0;
+        const CALIBRATE_TARGET_CM = 15.0; // 校正距離 15cm
+        const TARGET_OBJECT_SIZE = 3.5;   // 35mm = 3.5cm
+        let focalLength = 550;
+
+        let currentDetectedPixelWidth = 0;
         let smoothDistance = 0;
 
-        async function initModel() {
-            try {
-                // 核心修復：關閉引發 Shader 鏈結失敗的 PACK 特性
-                tf.env().set('WEBGL_PACK', false);
+        // OpenCV 初始化完成回呼
+        window.onOpenCvReady = () => {
+            statusText.innerText = "⚠️ 請將 35mm 物體放置於 15cm 處進行校正";
+            isCvReady = true;
+            startCamera();
+        };
 
-                // 嘗試啟用 WebGL，若 GPU 不相容則自動安全降級
-                try {
-                    await tf.setBackend('webgl');
-                } catch (e) {
-                    console.warn("WebGL 失敗，切換至 CPU 模式", e);
-                    await tf.setBackend('cpu');
-                }
-
-                await tf.ready();
-                model = await cocoSsd.load({ base: 'mobilenet_v1' });
-                statusText.innerText = "⚠️ 請將物件固定放在 15 公分處進行校正";
-                startCamera();
-            } catch (err) {
-                console.error(err);
-                statusText.innerText = "❌ 請點選右上角「...」改用 Chrome 開啟網頁！";
-            }
+        if (typeof cv !== 'undefined' && cv.Mat) {
+            window.onOpenCvReady();
+        } else {
+            Module = { onRuntimeInitialized: window.onOpenCvReady };
         }
 
         async function startCamera() {
@@ -104,83 +98,170 @@
                 video.srcObject = currentStream;
                 await video.play();
 
-                detectLoop();
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 480;
+
+                processVideo();
             } catch (err) {
-                statusText.innerText = "❌ 無法開啟相機，請確認允許存取權限";
+                statusText.innerText = "❌ 無法存取相機權限，請改用 Chrome/Safari 開啟。";
             }
         }
 
-        async function detectLoop() {
-            if (video.readyState >= 2 && model && !isDetecting) {
-                isDetecting = true;
+        function processVideo() {
+            let src = new cv.Mat(canvas.height, canvas.width, cv.CV_8UC4);
+            let hsv = new cv.Mat();
+            let mask = new cv.Mat();
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+            
+            let ksize = new cv.Size(5, 5);
+            let M = cv.getStructuringElement(cv.MORPH_RECT, ksize);
+
+            function nextFrame() {
+                if (!isCvReady || video.paused || video.ended) return;
+
                 try {
-                    const predictions = await model.detect(video);
-                    renderDetections(predictions);
-                } catch (e) {
-                    console.error("Detect Error: ", e);
-                }
-                isDetecting = false;
-            }
-            requestAnimationFrame(detectLoop);
-        }
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    src.data.set(imageData.data);
 
-        function renderDetections(predictions) {
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-            const selectedTarget = targetSelect.value;
-            const realWidth = parseFloat(targetSelect.options[targetSelect.selectedIndex].dataset.width);
-
-            let targetFound = false;
-
-            predictions.forEach(prediction => {
-                if (prediction.class === selectedTarget) {
-                    targetFound = true;
-                    const [x, y, width, height] = prediction.bbox;
-                    currentTargetBBoxWidth = width;
-
-                    ctx.strokeStyle = isCalibrated ? '#00ffcc' : '#ffcc00';
-                    ctx.lineWidth = 4;
-                    ctx.strokeRect(x, y, width, height);
-
-                    if (isCalibrated) {
-                        const rawDistance = (realWidth * focalLength) / width;
-                        smoothDistance = smoothDistance === 0 ? rawDistance : (smoothDistance * 0.7 + rawDistance * 0.3);
-
-                        ctx.fillStyle = '#00ffcc';
-                        ctx.font = 'bold 28px sans-serif';
-                        ctx.fillText(`${prediction.class}: ${Math.round(smoothDistance)} cm`, x, Math.max(y - 10, 30));
-                        statusText.innerText = `🟢 測距中：${Math.round(smoothDistance)} cm`;
-                    } else {
-                        ctx.fillStyle = '#ffcc00';
-                        ctx.font = 'bold 22px sans-serif';
-                        ctx.fillText(`已鎖定目標，請保持 15cm 並按校正`, x, Math.max(y - 10, 30));
+                    // 前鏡頭鏡像處理
+                    if (useFacingMode === "user") {
+                        cv.flip(src, src, 1);
                     }
-                }
-            });
 
-            if (!targetFound) {
-                currentTargetBBoxWidth = 0;
-                smoothDistance = 0;
-                if (!isCalibrated) {
-                    statusText.innerText = `🔍 搜尋「${selectedTarget}」中...`;
+                    // 色彩轉換：RGBA -> RGB -> HSV
+                    cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
+                    cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+
+                    // 篩選「白色」區域 (HSV 設定: 飽和度 S 較低，亮度 V 高)
+                    let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 160, 0]);
+                    let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 60, 255, 255]);
+                    cv.inRange(hsv, low, high, mask);
+                    low.delete(); high.delete();
+
+                    // 形態學運算：消除微小雜訊
+                    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, M);
+                    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, M);
+
+                    // 搜尋輪廓
+                    cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                    let targetShape = targetSelect.value; // 'sphere' 或 'cube'
+                    let bestContourIndex = -1;
+                    let maxMatchScore = 0;
+                    let detectedWidthPixels = 0;
+
+                    for (let i = 0; i < contours.size(); ++i) {
+                        let cnt = contours.get(i);
+                        let area = cv.contourArea(cnt);
+
+                        // 過濾過小及過大區域 (針對 35mm 尺寸)
+                        if (area > 300 && area < (canvas.width * canvas.height * 0.5)) {
+                            let perimeter = cv.arcLength(cnt, true);
+                            
+                            if (targetShape === 'sphere') {
+                                // 計算圓形度 Circularity = (4 * PI * Area) / (Perimeter^2)
+                                let circularity = (4 * Math.PI * area) / (perimeter * perimeter);
+                                if (circularity > 0.65 && circularity > maxMatchScore) {
+                                    maxMatchScore = circularity;
+                                    bestContourIndex = i;
+                                }
+                            } else if (targetShape === 'cube') {
+                                // 計算矩形度 Rectangularity 與長寬比 Aspect Ratio
+                                let rect = cv.boundingRect(cnt);
+                                let rectArea = rect.width * rect.height;
+                                let rectangularity = area / rectArea;
+                                let aspectRatio = Math.min(rect.width, rect.height) / Math.max(rect.width, rect.height);
+                                
+                                // 立方體特徵：矩形度 > 0.7 且長寬比接近 1
+                                if (rectangularity > 0.65 && aspectRatio > 0.65 && rectangularity > maxMatchScore) {
+                                    maxMatchScore = rectangularity;
+                                    bestContourIndex = i;
+                                }
+                            }
+                        }
+                        cnt.delete();
+                    }
+
+                    // 若捕捉到符合目標幾何特徵的物件
+                    if (bestContourIndex !== -1) {
+                        let targetCnt = contours.get(bestContourIndex);
+
+                        if (targetShape === 'sphere') {
+                            // 圓球：外接圓直徑
+                            let circle = cv.minEnclosingCircle(targetCnt);
+                            let center = circle.center;
+                            let radius = circle.radius;
+                            detectedWidthPixels = radius * 2;
+
+                            // 繪製圓形邊框
+                            cv.circle(src, center, radius, [0, 255, 204, 255], 3);
+                        } else {
+                            // 立方體：外接矩形寬度
+                            let rect = cv.boundingRect(targetCnt);
+                            detectedWidthPixels = Math.max(rect.width, rect.height);
+
+                            let p1 = new cv.Point(rect.x, rect.y);
+                            let p2 = new cv.Point(rect.x + rect.width, rect.y + rect.height);
+                            cv.rectangle(src, p1, p2, [0, 255, 204, 255], 3);
+                        }
+                        targetCnt.delete();
+
+                        currentDetectedPixelWidth = detectedWidthPixels;
+
+                        if (isCalibrated) {
+                            // 物理距離計算 D = (W * f) / w
+                            let rawDistance = (TARGET_OBJECT_SIZE * focalLength) / detectedWidthPixels;
+                            smoothDistance = smoothDistance === 0 ? rawDistance : (smoothDistance * 0.7 + rawDistance * 0.3);
+
+                            let text = `Dist: ${Math.round(smoothDistance)} cm`;
+                            cv.putText(src, text, new cv.Point(30, 50), cv.FONT_HERSHEY_SIMPLEX, 1.0, [0, 255, 204, 255], 3);
+                            statusText.innerText = `🟢 實時測距中：${Math.round(smoothDistance)} cm`;
+                        } else {
+                            cv.putText(src, "Target Locked - Calibrate 15cm", new cv.Point(20, 50), cv.FONT_HERSHEY_SIMPLEX, 0.7, [255, 204, 0, 255], 2);
+                            statusText.innerText = "⚠️ 已鎖定目標物，請保持 15cm 並按下校正";
+                        }
+                    } else {
+                        currentDetectedPixelWidth = 0;
+                        smoothDistance = 0;
+                        if (!isCalibrated) {
+                            statusText.innerText = `🔍 搜尋 35mm 白色${targetShape === 'sphere' ? '圓球' : '立方體'}中...`;
+                        }
+                    }
+
+                    cv.imshow('canvasOutput', src);
+
+                } catch (err) {
+                    console.log("Frame error: ", err);
                 }
+
+                setTimeout(nextFrame, 30);
             }
+
+            setTimeout(nextFrame, 30);
         }
 
+        // 校正按鈕
         calibrateBtn.addEventListener('click', () => {
-            if (currentTargetBBoxWidth > 0) {
-                const realWidth = parseFloat(targetSelect.options[targetSelect.selectedIndex].dataset.width);
-                focalLength = (currentTargetBBoxWidth * CALIBRATE_TARGET_CM) / realWidth;
+            if (currentDetectedPixelWidth > 0) {
+                // 反推焦距 f = (w * D) / W
+                focalLength = (currentDetectedPixelWidth * CALIBRATE_TARGET_CM) / TARGET_OBJECT_SIZE;
                 isCalibrated = true;
                 statusText.className = "ready";
                 statusText.innerText = "✅ 校正完成！開始實時物件測距";
                 calibrateBtn.innerText = "🔄 重新校正 (15cm)";
             } else {
-                alert("畫面上未找到指定的物件！請對準目標物再按確認。");
+                alert("未偵測到 35mm 白色物件！請將目標物放在深色背景前並對準鏡頭。");
             }
+        });
+
+        // 切換目標物件時重置校正
+        targetSelect.addEventListener('change', () => {
+            isCalibrated = false;
+            calibrateBtn.innerText = "🎯 確認 15cm 校正";
+            statusText.className = "";
+            statusText.innerText = "⚠️ 更換目標，請將物件放在 15cm 處重新校正";
         });
 
         switchBtn.addEventListener('click', () => {
@@ -189,8 +270,6 @@
             calibrateBtn.innerText = "🎯 確認 15cm 校正";
             startCamera();
         });
-
-        initModel();
     </script>
 </body>
 </html>
