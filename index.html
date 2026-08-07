@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>AI 指定物件距離偵測</title>
-    <!-- 指定穩定版本之 TensorFlow.js 與 COCO-SSD -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
     <style>
@@ -25,7 +24,7 @@
 <body>
 
     <h1>AI 指定物件距離偵測</h1>
-    <div id="status">⏳ 正在載入 AI 模型...</div>
+    <div id="status">⏳ 正在初始化引擎...</div>
 
     <div class="control-panel">
         <label>偵測目標：
@@ -68,17 +67,26 @@
         let currentTargetBBoxWidth = 0;
         let smoothDistance = 0;
 
-        // 初始化與載入模型 (含錯誤重試與輕量化設定)
         async function initModel() {
             try {
+                // 核心修復：關閉引發 Shader 鏈結失敗的 PACK 特性
+                tf.env().set('WEBGL_PACK', false);
+
+                // 嘗試啟用 WebGL，若 GPU 不相容則自動安全降級
+                try {
+                    await tf.setBackend('webgl');
+                } catch (e) {
+                    console.warn("WebGL 失敗，切換至 CPU 模式", e);
+                    await tf.setBackend('cpu');
+                }
+
                 await tf.ready();
-                // 指定載入 mobilenet_v1 輕量模型，解決手機記憶體溢出與下載卡死問題
                 model = await cocoSsd.load({ base: 'mobilenet_v1' });
                 statusText.innerText = "⚠️ 請將物件固定放在 15 公分處進行校正";
                 startCamera();
             } catch (err) {
                 console.error(err);
-                statusText.innerText = "❌ 模型載入失敗：" + (err.message || "請檢查網路後重新整理");
+                statusText.innerText = "❌ 請點選右上角「...」改用 Chrome 開啟網頁！";
             }
         }
 
@@ -182,7 +190,6 @@
             startCamera();
         });
 
-        // 啟動模型載入
         initModel();
     </script>
 </body>
