@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>35mm 白色幾何體距離偵測</title>
-    <!-- 引入高相容性單執行緒 OpenCV.js -->
     <script async src="https://docs.opencv.org/4.9.0/opencv.js" type="text/javascript"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #121212; color: #fff; margin: 0; padding: 15px; }
@@ -60,18 +59,17 @@
         const switchBtn = document.getElementById('switchBtn');
 
         let currentStream = null;
-        let useFacingMode = "environment"; // 預設使用後鏡頭
+        let useFacingMode = "environment";
         let isCvReady = false;
 
         let isCalibrated = false;
-        const CALIBRATE_TARGET_CM = 15.0; // 校正距離 15cm
+        const CALIBRATE_TARGET_CM = 15.0; 
         const TARGET_OBJECT_SIZE = 3.5;   // 35mm = 3.5cm
         let focalLength = 550;
 
         let currentDetectedPixelWidth = 0;
         let smoothDistance = 0;
 
-        // OpenCV 初始化完成回呼
         window.onOpenCvReady = () => {
             statusText.innerText = "⚠️ 請將 35mm 物體放置於 15cm 處進行校正";
             isCvReady = true;
@@ -125,29 +123,27 @@
                     let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     src.data.set(imageData.data);
 
-                    // 前鏡頭鏡像處理
                     if (useFacingMode === "user") {
                         cv.flip(src, src, 1);
                     }
 
-                    // 色彩轉換：RGBA -> RGB -> HSV
+                    // 色彩空間轉換：RGBA -> RGB -> HSV
                     cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
                     cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
 
-                    // 篩選「白色」區域 (HSV 設定: 飽和度 S 較低，亮度 V 高)
-                    let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 160, 0]);
-                    let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 60, 255, 255]);
+                    // 篩選「白色」範圍 (寬鬆設定，相容各種環境光)
+                    let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 150, 0]);
+                    let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 70, 255, 255]);
                     cv.inRange(hsv, low, high, mask);
                     low.delete(); high.delete();
 
-                    // 形態學運算：消除微小雜訊
+                    // 形態學運算：消除雜訊與填補空洞
                     cv.morphologyEx(mask, mask, cv.MORPH_OPEN, M);
                     cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, M);
 
-                    // 搜尋輪廓
                     cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-                    let targetShape = targetSelect.value; // 'sphere' 或 'cube'
+                    let targetShape = targetSelect.value;
                     let bestContourIndex = -1;
                     let maxMatchScore = 0;
                     let detectedWidthPixels = 0;
@@ -156,52 +152,56 @@
                         let cnt = contours.get(i);
                         let area = cv.contourArea(cnt);
 
-                        // 過濾過小及過大區域 (針對 35mm 尺寸)
                         if (area > 300 && area < (canvas.width * canvas.height * 0.5)) {
                             let perimeter = cv.arcLength(cnt, true);
                             
                             if (targetShape === 'sphere') {
-                                // 計算圓形度 Circularity = (4 * PI * Area) / (Perimeter^2)
+                                // 圓球：圓形度評估 Circularity
                                 let circularity = (4 * Math.PI * area) / (perimeter * perimeter);
-                                if (circularity > 0.65 && circularity > maxMatchScore) {
+                                if (circularity > 0.60 && circularity > maxMatchScore) {
                                     maxMatchScore = circularity;
                                     bestContourIndex = i;
                                 }
                             } else if (targetShape === 'cube') {
-                                // 計算矩形度 Rectangularity 與長寬比 Aspect Ratio
-                                let rect = cv.boundingRect(cnt);
-                                let rectArea = rect.width * rect.height;
-                                let rectangularity = area / rectArea;
-                                let aspectRatio = Math.min(rect.width, rect.height) / Math.max(rect.width, rect.height);
-                                
-                                // 立方體特徵：矩形度 > 0.7 且長寬比接近 1
-                                if (rectangularity > 0.65 && aspectRatio > 0.65 && rectangularity > maxMatchScore) {
-                                    maxMatchScore = rectangularity;
-                                    bestContourIndex = i;
+                                // 核心修正：立方體透視幾何判定
+                                // 1. 計算凸包充實度 (Solidity)
+                                let hull = new cv.Mat();
+                                cv.convexHull(cnt, hull);
+                                let hullArea = cv.contourArea(hull);
+                                let solidity = hullArea > 0 ? (area / hullArea) : 0;
+                                hull.delete();
+
+                                // 2. 多邊形逼近 (計算輪廓頂點數量)
+                                let approx = new cv.Mat();
+                                cv.approxPolyDP(cnt, approx, 0.03 * perimeter, true);
+                                let vertices = approx.rows;
+                                approx.delete();
+
+                                // 3D 立方體透視輪廓必定為高充實度 (Solidity > 0.82) 且頂點在 4~7 個之間
+                                if (solidity > 0.82 && vertices >= 4 && vertices <= 7) {
+                                    if (solidity > maxMatchScore) {
+                                        maxMatchScore = solidity;
+                                        bestContourIndex = i;
+                                    }
                                 }
                             }
                         }
                         cnt.delete();
                     }
 
-                    // 若捕捉到符合目標幾何特徵的物件
                     if (bestContourIndex !== -1) {
                         let targetCnt = contours.get(bestContourIndex);
 
                         if (targetShape === 'sphere') {
-                            // 圓球：外接圓直徑
                             let circle = cv.minEnclosingCircle(targetCnt);
-                            let center = circle.center;
-                            let radius = circle.radius;
-                            detectedWidthPixels = radius * 2;
-
-                            // 繪製圓形邊框
-                            cv.circle(src, center, radius, [0, 255, 204, 255], 3);
+                            detectedWidthPixels = circle.radius * 2;
+                            cv.circle(src, circle.center, circle.radius, [0, 255, 204, 255], 3);
                         } else {
-                            // 立方體：外接矩形寬度
-                            let rect = cv.boundingRect(targetCnt);
-                            detectedWidthPixels = Math.max(rect.width, rect.height);
+                            // 核心修正：使用最小外接旋轉矩形 (minAreaRect) 取精準邊長
+                            let rotatedRect = cv.minAreaRect(targetCnt);
+                            detectedWidthPixels = Math.max(rotatedRect.size.width, rotatedRect.size.height);
 
+                            let rect = cv.boundingRect(targetCnt);
                             let p1 = new cv.Point(rect.x, rect.y);
                             let p2 = new cv.Point(rect.x + rect.width, rect.y + rect.height);
                             cv.rectangle(src, p1, p2, [0, 255, 204, 255], 3);
@@ -211,7 +211,6 @@
                         currentDetectedPixelWidth = detectedWidthPixels;
 
                         if (isCalibrated) {
-                            // 物理距離計算 D = (W * f) / w
                             let rawDistance = (TARGET_OBJECT_SIZE * focalLength) / detectedWidthPixels;
                             smoothDistance = smoothDistance === 0 ? rawDistance : (smoothDistance * 0.7 + rawDistance * 0.3);
 
@@ -242,10 +241,8 @@
             setTimeout(nextFrame, 30);
         }
 
-        // 校正按鈕
         calibrateBtn.addEventListener('click', () => {
             if (currentDetectedPixelWidth > 0) {
-                // 反推焦距 f = (w * D) / W
                 focalLength = (currentDetectedPixelWidth * CALIBRATE_TARGET_CM) / TARGET_OBJECT_SIZE;
                 isCalibrated = true;
                 statusText.className = "ready";
@@ -256,7 +253,6 @@
             }
         });
 
-        // 切換目標物件時重置校正
         targetSelect.addEventListener('change', () => {
             isCalibrated = false;
             calibrateBtn.innerText = "🎯 確認 15cm 校正";
