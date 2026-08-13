@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 小白球測距系統 - 診斷修復版</title>
+    <title>AI 小白球測距系統 - 極速原生版</title>
     <style>
         body { 
             margin: 0; 
@@ -22,19 +22,15 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
         button { 
-            background-color: #555; 
+            background-color: #4CAF50; 
             color: white; 
             border: none; 
-            padding: 12px 24px; 
+            padding: 15px 30px; 
             font-size: 18px; 
             border-radius: 8px; 
-            cursor: not-allowed; 
-            margin-top: 10px; 
-            font-weight: bold;
-        }
-        button.active { 
-            background-color: #4CAF50; 
             cursor: pointer; 
+            margin-top: 5px; 
+            font-weight: bold;
         }
         video { display: none; } 
         canvas { 
@@ -47,150 +43,131 @@
     </style>
 </head>
 <body>
-    <h2>35mm 小白球距離偵測</h2>
+    <h2>35mm 小白球距離偵測 (原生版)</h2>
     <div class="panel">
-        <p>系統狀態: <span id="status" style="color: #FFEB3B;">正在連線下載 OpenCV 核心...</span></p>
-        <p style="font-size: 24px; color: #4CAF50; margin: 5px 0;">距離: <span id="distance">-</span> cm</p>
-        <button id="startBtn" onclick="startCamera()" disabled>請等待 OpenCV 載入...</button>
+        <p>系統狀態: <span id="status" style="color: #4CAF50;">準備就緒</span></p>
+        <p style="font-size: 26px; color: #4CAF50; margin: 5px 0;">距離: <span id="distance">-</span> cm</p>
+        <button id="startBtn" onclick="startCamera()">【點擊直接啟動相機】</button>
     </div>
     
     <video id="videoInput" autoplay playsinline muted></video>
     <canvas id="canvasOutput"></canvas>
 
     <script>
-        var Module = {
-            onRuntimeInitialized() {
-                document.getElementById('status').innerText = 'OpenCV 載入成功！可以開始';
-                document.getElementById('status').style.color = '#4CAF50';
-                
-                let btn = document.getElementById('startBtn');
-                btn.innerText = '【點擊啟動相機與 AI】';
-                btn.className = 'active';
-                btn.disabled = false;
-                window.opencvReady = true;
-            }
-        };
-
-        // 偵測腳本是否載入失敗
-        function handleScriptError() {
-            document.getElementById('status').innerText = '錯誤：OpenCV 載入失敗 (可能被網路阻擋)';
-            document.getElementById('status').style.color = '#F44336';
-            document.getElementById('startBtn').innerText = '載入失敗';
-        }
-    </script>
-    
-    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onerror="handleScriptError()" type="text/javascript"></script>
-
-    <script>
-        const KNOWN_WIDTH = 3.5; 
-        let FOCAL_LENGTH = 500;  
+        const KNOWN_WIDTH = 3.5; // 小白球直徑 3.5 公分
+        let FOCAL_LENGTH = 500;  // 預設焦距常數
         
         let video = document.getElementById('videoInput');
         let canvas = document.getElementById('canvasOutput');
-        let ctx = canvas.getContext('2d');
+        let ctx = canvas.getContext('2d', { willReadFrequently: true });
         let streaming = false;
 
         function startCamera() {
-            if (!window.opencvReady) {
-                alert('OpenCV 還沒準備好，請檢查網路或重新整理');
-                return;
-            }
-
             document.getElementById('status').innerText = '正在要求相機權限...';
             document.getElementById('startBtn').disabled = true;
 
-            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+            navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }, 
+                audio: false 
+            })
             .then(function(stream) {
-                initVideo(stream);
+                video.srcObject = stream;
+                video.play();
+                
+                video.addEventListener('loadedmetadata', () => {
+                    if (!streaming) {
+                        // 設定較低的工作解析度以確保手機運算流暢 (320x240)
+                        canvas.width = 320;
+                        canvas.height = 240;
+                        streaming = true;
+                        document.getElementById('startBtn').style.display = 'none';
+                        document.getElementById('status').innerText = '偵測中...';
+                        requestAnimationFrame(processVideo);
+                    }
+                });
             })
             .catch(function(err) {
                 navigator.mediaDevices.getUserMedia({ video: true, audio: false })
                 .then(function(stream) {
-                    initVideo(stream);
+                    video.srcObject = stream;
+                    video.play();
+                    video.addEventListener('loadedmetadata', () => {
+                        if (!streaming) {
+                            canvas.width = 320;
+                            canvas.height = 240;
+                            streaming = true;
+                            document.getElementById('startBtn').style.display = 'none';
+                            document.getElementById('status').innerText = '偵測中 (預設鏡頭)';
+                            requestAnimationFrame(processVideo);
+                        }
+                    });
                 })
                 .catch(function(e) {
                     document.getElementById('status').innerText = '相機失敗: ' + e.message;
-                    document.getElementById('status').style.color = '#F44336';
                     document.getElementById('startBtn').disabled = false;
                 });
-            });
-        }
-
-        function initVideo(stream) {
-            video.srcObject = stream;
-            video.play();
-            
-            video.addEventListener('loadedmetadata', () => {
-                if (!streaming) {
-                    canvas.width = video.videoWidth || 640;
-                    canvas.height = video.videoHeight || 480;
-                    streaming = true;
-                    document.getElementById('startBtn').style.display = 'none';
-                    document.getElementById('status').innerText = 'AI 視覺辨識運作中';
-                    document.getElementById('status').style.color = '#4CAF50';
-                    requestAnimationFrame(processVideo);
-                }
             });
         }
 
         function processVideo() {
             if (!streaming) return;
 
-            try {
-                if (video.videoWidth === 0 || video.videoHeight === 0) {
-                    requestAnimationFrame(processVideo);
-                    return;
-                }
+            // 1. 將視訊畫格畫到 Canvas 上
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            let frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            let data = frame.data;
 
-                let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-                let cap = new cv.VideoCapture(video);
-                cap.read(src);
+            let minX = canvas.width, maxX = 0, minY = canvas.height, maxY = 0;
+            let whitePixelCount = 0;
 
-                let hsv = new cv.Mat();
-                cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
-                cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+            // 2. 掃描畫面尋找「白色且高亮度」的像素 (小白球)
+            // 為了效能，每隔 2 個像素取樣一次
+            for (let y = 0; y < canvas.height; y += 2) {
+                for (let x = 0; x < canvas.width; x += 2) {
+                    let idx = (y * canvas.width + x) * 4;
+                    let r = data[idx];
+                    let g = data[idx + 1];
+                    let b = data[idx + 2];
 
-                let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 150, 0]);     
-                let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 60, 255, 0]); 
-                
-                let mask = new cv.Mat();
-                cv.inRange(hsv, low, high, mask);
-                cv.GaussianBlur(mask, mask, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-
-                let contours = new cv.MatVector();
-                let hierarchy = new cv.Mat();
-                cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-                if (contours.size() > 0) {
-                    let maxArea = 0;
-                    let maxContourIndex = -1;
-                    for (let i = 0; i < contours.size(); i++) {
-                        let area = cv.contourArea(contours.get(i));
-                        if (area > maxArea) {
-                            maxArea = area;
-                            maxContourIndex = i;
-                        }
-                    }
-
-                    if (maxArea > 500) {
-                        let circle = cv.minEnclosingCircle(contours.get(maxContourIndex));
-                        let pixelWidth = circle.radius * 2;
-                        let distance = (KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth;
-
-                        document.getElementById('distance').innerText = distance.toFixed(1);
-
-                        cv.circle(src, circle.center, circle.radius, [0, 255, 255, 255], 3); 
-                        cv.circle(src, circle.center, 2, [255, 0, 0, 255], 3); 
-                        cv.putText(src, distance.toFixed(1) + "cm", new cv.Point(circle.center.x, circle.center.y - circle.radius - 10), cv.FONT_HERSHEY_SIMPLEX, 0.8, [0, 255, 255, 255], 2);
+                    // 白色的定義：R, G, B 數值都很高且相近（高亮度、低色彩飽和度）
+                    if (r > 200 && g > 200 && b > 200 && Math.abs(r - g) < 20 && Math.abs(g - b) < 20) {
+                        whitePixelCount++;
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
                     }
                 }
+            }
 
-                cv.imshow('canvasOutput', src);
-                
-                src.delete(); hsv.delete(); low.delete(); high.delete(); mask.delete(); contours.delete(); hierarchy.delete();
-                
-            } catch (err) {
-                console.error("OpenCV 處理錯誤: ", err);
+            // 3. 如果找到足夠數量的白色像素，計算邊界與距離
+            if (whitePixelCount > 100) {
+                let pixelWidth = maxX - minX;
+                let pixelHeight = maxY - minY;
+                let avgSize = (pixelWidth + pixelHeight) / 2;
+
+                if (avgSize > 10) {
+                    let distance = (KNOWN_WIDTH * FOCAL_LENGTH) / avgSize;
+                    document.getElementById('distance').innerText = distance.toFixed(1);
+
+                    // 在畫面上畫出追蹤框與中心點
+                    let centerX = (minX + maxX) / 2;
+                    let centerY = (minY + maxY) / 2;
+                    let radius = avgSize / 2;
+
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                    ctx.lineWidth = 3;
+                    ctx.strokeStyle = '#00FFFF';
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#FF0000';
+                    ctx.fillRect(centerX - 2, centerY - 2, 4, 4);
+                } else {
+                    document.getElementById('distance').innerText = "-";
+                }
+            } else {
+                document.getElementById('distance').innerText = "-";
             }
 
             requestAnimationFrame(processVideo);
