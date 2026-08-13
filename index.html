@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 小白球測距系統</title>
+    <title>AI 小白球測距系統 - 穩健版</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" type="text/javascript"></script>
     <style>
         body { 
@@ -46,7 +46,7 @@
 <body>
     <h2>35mm 小白球距離偵測</h2>
     <div class="panel">
-        <p>系統狀態: <span id="status" style="color: #FFEB3B;">等待點擊啟動相機</span></p>
+        <p>系統狀態: <span id="status" style="color: #FFEB3B;">等待啟動</span></p>
         <p style="font-size: 24px; color: #4CAF50; margin: 5px 0;">距離: <span id="distance">-</span> cm</p>
         <button id="startBtn" onclick="startCamera()">【點擊啟動 AI 視覺】</button>
     </div>
@@ -55,9 +55,8 @@
     <canvas id="canvasOutput"></canvas>
 
     <script>
-        // === 系統參數設定 ===
-        const KNOWN_WIDTH = 3.5; // 小白球真實直徑 (3.5公分)
-        let FOCAL_LENGTH = 500;  // 預設焦距常數 (稍後可進行 30cm 校正)
+        const KNOWN_WIDTH = 3.5; // 小白球直徑 3.5 公分
+        let FOCAL_LENGTH = 500;  // 預設焦距常數
         
         let video = document.getElementById('videoInput');
         let canvas = document.getElementById('canvasOutput');
@@ -65,7 +64,7 @@
         let streaming = false;
 
         function startCamera() {
-            document.getElementById('status').innerText = '正在啟動相機與載入 AI...';
+            document.getElementById('status').innerText = '正在啟動相機...';
             document.getElementById('startBtn').disabled = true;
 
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
@@ -79,14 +78,13 @@
                         canvas.height = video.videoHeight || 480;
                         streaming = true;
                         document.getElementById('startBtn').style.display = 'none';
-                        document.getElementById('status').innerText = 'AI 視覺運作中';
+                        document.getElementById('status').innerText = '相機運行中 (等待 OpenCV...)';
                         document.getElementById('status').style.color = '#4CAF50';
                         requestAnimationFrame(processVideo);
                     }
                 });
             })
             .catch(function(err) {
-                // 備用方案
                 navigator.mediaDevices.getUserMedia({ video: true, audio: false })
                 .then(function(stream) {
                     video.srcObject = stream;
@@ -97,7 +95,7 @@
                             canvas.height = video.videoHeight || 480;
                             streaming = true;
                             document.getElementById('startBtn').style.display = 'none';
-                            document.getElementById('status').innerText = 'AI 視覺運作中 (預設鏡頭)';
+                            document.getElementById('status').innerText = '相機運行中 (預設鏡頭)';
                             document.getElementById('status').style.color = '#4CAF50';
                             requestAnimationFrame(processVideo);
                         }
@@ -114,67 +112,71 @@
         function processVideo() {
             if (!streaming) return;
 
-            // 確保 cv (OpenCV) 已經載入完畢才執行影像處理
-            if (typeof cv === 'undefined' || !cv.Mat) {
+            // 🛡️ 關鍵保護：如果 OpenCV 還沒完全載入好，先略過這幀，避免畫面死當
+            if (typeof cv === 'undefined' || !cv.Mat || !cv.imshow) {
                 requestAnimationFrame(processVideo);
                 return;
             }
 
-            let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-            let cap = new cv.VideoCapture(video);
-            
             try {
+                // 如果相機還沒準備好寬高，直接進入下一幀
+                if (video.videoWidth === 0 || video.videoHeight === 0) {
+                    requestAnimationFrame(processVideo);
+                    return;
+                }
+
+                let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+                let cap = new cv.VideoCapture(video);
                 cap.read(src);
-            } catch (e) {
-                src.delete();
-                requestAnimationFrame(processVideo);
-                return;
-            }
 
-            let hsv = new cv.Mat();
-            cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
-            cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+                let hsv = new cv.Mat();
+                cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
+                cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
 
-            // 追蹤白色的 HSV 範圍（低飽和、高亮度）
-            let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 150, 0]);     
-            let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 60, 255, 0]); 
-            
-            let mask = new cv.Mat();
-            cv.inRange(hsv, low, high, mask);
-            cv.GaussianBlur(mask, mask, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+                // 白色球的 HSV 篩選範圍
+                let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 150, 0]);     
+                let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 60, 255, 0]); 
+                
+                let mask = new cv.Mat();
+                cv.inRange(hsv, low, high, mask);
+                cv.GaussianBlur(mask, mask, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
 
-            let contours = new cv.MatVector();
-            let hierarchy = new cv.Mat();
-            cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
+                cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-            if (contours.size() > 0) {
-                let maxArea = 0;
-                let maxContourIndex = -1;
-                for (let i = 0; i < contours.size(); i++) {
-                    let area = cv.contourArea(contours.get(i));
-                    if (area > maxArea) {
-                        maxArea = area;
-                        maxContourIndex = i;
+                if (contours.size() > 0) {
+                    let maxArea = 0;
+                    let maxContourIndex = -1;
+                    for (let i = 0; i < contours.size(); i++) {
+                        let area = cv.contourArea(contours.get(i));
+                        if (area > maxArea) {
+                            maxArea = area;
+                            maxContourIndex = i;
+                        }
+                    }
+
+                    if (maxArea > 500) {
+                        let circle = cv.minEnclosingCircle(contours.get(maxContourIndex));
+                        let pixelWidth = circle.radius * 2;
+                        let distance = (KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth;
+
+                        document.getElementById('distance').innerText = distance.toFixed(1);
+
+                        cv.circle(src, circle.center, circle.radius, [0, 255, 255, 255], 3); 
+                        cv.circle(src, circle.center, 2, [255, 0, 0, 255], 3); 
+                        cv.putText(src, distance.toFixed(1) + "cm", new cv.Point(circle.center.x, circle.center.y - circle.radius - 10), cv.FONT_HERSHEY_SIMPLEX, 0.8, [0, 255, 255, 255], 2);
                     }
                 }
 
-                // 面積過濾雜訊
-                if (maxArea > 500) {
-                    let circle = cv.minEnclosingCircle(contours.get(maxContourIndex));
-                    let pixelWidth = circle.radius * 2;
-                    let distance = (KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth;
-
-                    document.getElementById('distance').innerText = distance.toFixed(1);
-
-                    // 在畫面上繪製黃色追蹤圓與距離文字
-                    cv.circle(src, circle.center, circle.radius, [0, 255, 255, 255], 3); 
-                    cv.circle(src, circle.center, 2, [255, 0, 0, 255], 3); 
-                    cv.putText(src, distance.toFixed(1) + "cm", new cv.Point(circle.center.x, circle.center.y - circle.radius - 10), cv.FONT_HERSHEY_SIMPLEX, 0.8, [0, 255, 255, 255], 2);
-                }
+                cv.imshow('canvasOutput', src);
+                
+                // 釋放記憶體
+                src.delete(); hsv.delete(); low.delete(); high.delete(); mask.delete(); contours.delete(); hierarchy.delete();
+                
+            } catch (err) {
+                console.error("OpenCV 處理錯誤: ", err);
             }
-
-            cv.imshow('canvasOutput', src);
-            src.delete(); hsv.delete(); low.delete(); high.delete(); mask.delete(); contours.delete(); hierarchy.delete();
 
             requestAnimationFrame(processVideo);
         }
