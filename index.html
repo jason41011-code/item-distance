@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>35mm 白球視覺測距 - 精準調校版</title>
+    <title>35mm 白球精準追蹤與測距</title>
     <style>
         body { 
             margin: 0; 
@@ -15,10 +15,11 @@
         }
         .box { 
             background: #222; 
-            padding: 12px; 
+            padding: 15px; 
             border-radius: 10px; 
             max-width: 600px; 
             margin: 0 auto 10px auto; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.5);
         }
         button { 
             background-color: #4CAF50; 
@@ -30,7 +31,6 @@
             cursor: pointer; 
             font-weight: bold;
         }
-        /* 讓畫布直接顯示出來，你可以在上面看到追蹤框與距離 */
         canvas { 
             width: 100%; 
             max-width: 600px; 
@@ -39,32 +39,39 @@
             background-color: #000; 
         }
         video { display: none; }
-        .info { font-size: 22px; color: #ffeb3b; margin: 8px 0; }
+        .info { font-size: 24px; color: #ffeb3b; margin: 5px 0; }
+        .debug { font-family: monospace; font-size: 13px; color: #00e676; background: #000; padding: 8px; border-radius: 5px; margin-top: 8px; text-align: left; }
     </style>
 </head>
 <body>
-    <h2>35mm 白球距離精準調校</h2>
+    <h2>35mm 白球精準調校版</h2>
     <div class="box">
-        <button id="startBtn" onclick="initCamera()">【 點擊啟動視覺測距 】</button>
-        <div class="info">即時距離: <span id="distance">-</span> cm</div>
-        <p id="status" style="font-size: 14px; color: #888; margin: 5px 0;">狀態: 等待啟動相機</p>
+        <button id="startBtn" onclick="initCamera()">【 點擊啟動相機與追蹤 】</button>
+        <div class="info">距離: <span id="distance">-</span> cm</div>
+        <div class="debug" id="debugInfo">
+            狀態: 尚未啟動相機
+        </div>
     </div>
     
     <video id="videoInput" autoplay playsinline muted></video>
     <canvas id="canvasOutput"></canvas>
 
     <script>
-        // === 核心物理參數 ===
+        // === 物理與光學參數 ===
         const KNOWN_WIDTH = 3.5; // 小白球真實直徑 3.5 公分
-        let FOCAL_LENGTH = 350;  // 初始焦距常數 (稍後可透過 30cm 距離手動調整)
+        let FOCAL_LENGTH = 300;  // 焦距常數 (稍後可透過實測 30cm 調整)
         
         let video = document.getElementById('videoInput');
         let canvas = document.getElementById('canvasOutput');
         let ctx = canvas.getContext('2d', { willReadFrequently: true });
         let isRunning = false;
 
+        function logDebug(msg) {
+            document.getElementById('debugInfo').innerHTML = msg;
+        }
+
         function initCamera() {
-            document.getElementById('status').innerText = '狀態: 正在取得相機權限...';
+            logDebug("狀態: 正在要求相機權限...");
             
             navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } }, 
@@ -75,25 +82,24 @@
                 video.play();
                 
                 video.addEventListener('loadedmetadata', () => {
-                    // 設定輕量解析度確保手機流暢
                     canvas.width = 320;
                     canvas.height = 240;
                     isRunning = true;
                     
                     document.getElementById('startBtn').style.display = 'none';
-                    document.getElementById('status').innerText = '狀態: 視覺運作中 (請將 35mm 白球放入鏡頭)';
+                    logDebug("狀態: 相機啟動成功！正在掃描畫面中的白球...");
                     requestAnimationFrame(processFrame);
                 });
             })
             .catch(function(err) {
-                document.getElementById('status').innerText = '錯誤: 無法啟動相機 -> ' + err.message;
+                logDebug("錯誤: 無法啟動相機 -> " + err.message);
             });
         }
 
         function processFrame() {
             if (!isRunning) return;
 
-            // 1. 將相機畫面畫到 Canvas 上
+            // 將視訊畫格畫到 Canvas
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             let frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             let pixels = frameData.data;
@@ -102,7 +108,7 @@
             let minY = canvas.height, maxY = 0;
             let whitePixelCount = 0;
 
-            // 2. 掃描畫面尋找白色物體 (高亮度、低飽和度)
+            // 為了效能，每隔 2 個像素掃描一次
             for (let y = 0; y < canvas.height; y += 2) {
                 for (let x = 0; x < canvas.width; x += 2) {
                     let idx = (y * canvas.width + x) * 4;
@@ -110,8 +116,15 @@
                     let g = pixels[idx + 1];
                     let b = pixels[idx + 2];
 
-                    // 白球判定條件：RGB 皆大於 190，且數值接近
-                    if (r > 190 && g > 190 && b > 190 && Math.abs(r - g) < 20 && Math.abs(g - b) < 20) {
+                    let maxVal = Math.max(r, g, b);
+                    let minVal = Math.min(r, g, b);
+                    let diff = maxVal - minVal;
+                    let brightness = (r + g + b) / 3;
+
+                    // 🛠️ 寬容度更高的白色/高光判定：
+                    // 1. 平均亮度大於 110 (即使有一點陰影也能抓到)
+                    // 2. R, G, B 的數值差小於 40 (代表它是無色彩的白、灰、高光，而不是紅藍綠色塊)
+                    if (brightness > 110 && diff < 40) {
                         whitePixelCount++;
                         if (x < minX) minX = x;
                         if (x > maxX) maxX = x;
@@ -122,45 +135,47 @@
             }
 
             let distElem = document.getElementById('distance');
-            let statusElem = document.getElementById('status');
 
-            // 3. 如果白色像素點足夠多，且寬高合理，判定為目標白球
-            if (whitePixelCount > 40) {
+            // 如果畫面上出現了足夠的白色像素群
+            if (whitePixelCount > 30) {
                 let pixelWidth = maxX - minX;
                 let pixelHeight = maxY - minY;
-                
-                // 確保抓到的不是一整片牆壁（限制最大與最小像素寬度）
-                if (pixelWidth > 10 && pixelWidth < 250) {
-                    // 計算距離公式：(真實寬度 × 焦距) ÷ 畫面像素寬度
-                    let distance = (KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth;
-                    distElem.innerText = distance.toFixed(1);
-                    statusElem.innerText = `狀態: 🎯 鎖定白球 | 像素寬度: ${pixelWidth}px`;
+                let avgSize = (pixelWidth + pixelHeight) / 2;
 
-                    // 4. 直接在畫面上畫出綠色追蹤方框與中心點
+                // 限制抓取的大小範圍（避免把整面白牆或反光當成球）
+                if (avgSize > 8 && avgSize < 200) {
+                    let distance = (KNOWN_WIDTH * FOCAL_LENGTH) / avgSize;
+                    distElem.innerText = distance.toFixed(1);
+
+                    logDebug(`🎯 成功鎖定目標！<br>` +
+                             `- 白色像素點數: ${whitePixelCount}<br>` +
+                             `- 物體像素寬度: ${pixelWidth} px<br>` +
+                             `- 當前計算距離: ${distance.toFixed(1)} cm`);
+
+                    // 在畫面上畫出綠色追蹤方框
                     ctx.beginPath();
                     ctx.lineWidth = 3;
-                    ctx.strokeStyle = '#00FF00'; // 綠色框
+                    ctx.strokeStyle = '#00FF00';
                     ctx.rect(minX, minY, pixelWidth, pixelHeight);
                     ctx.stroke();
 
-                    // 畫出中心十字
+                    // 畫出中心紅點
                     let cx = (minX + maxX) / 2;
                     let cy = (minY + maxY) / 2;
                     ctx.fillStyle = '#FF0000';
                     ctx.fillRect(cx - 3, cy - 3, 6, 6);
 
-                    // 在框上方印出距離文字
-                    ctx.fillStyle = '#00FF00';
-                    ctx.font = '16px sans-serif';
-                    ctx.fillText(distance.toFixed(1) + ' cm', minX, Math.max(15, minY - 5));
-
                 } else {
                     distElem.innerText = "-";
-                    statusElem.innerText = "狀態: 尋找中 (白球過近或過遠)";
+                    logDebug(`⚠️ 偵測到白色區域，但尺寸不符 (過大或過小)<br>` +
+                             `- 偵測到的像素寬度: ${pixelWidth} px (需介於 8~200 之間)<br>` +
+                             `- 當前白色像素點數: ${whitePixelCount}`);
                 }
             } else {
                 distElem.innerText = "-";
-                statusElem.innerText = "狀態: 尋找白球中... (請將 35mm 小白球靠近鏡頭)";
+                logDebug(`🔍 尋找白球中...<br>` +
+                         `- 當前畫面中的白色像素數: ${whitePixelCount} (低於 30)<br>` +
+                         `- 💡 提示: 請將 35mm 小白球靠近鏡頭，或調整室內燈光`);
             }
 
             requestAnimationFrame(processFrame);
