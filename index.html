@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 小白球測距系統 - 穩健版</title>
-    <script async src="https://docs.opencv.org/4.8.0/opencv.js" type="text/javascript"></script>
+    <title>AI 小白球測距系統</title>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     <style>
         body { 
             margin: 0; 
@@ -23,15 +23,19 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
         button { 
-            background-color: #4CAF50; 
+            background-color: #555; 
             color: white; 
             border: none; 
             padding: 12px 24px; 
             font-size: 18px; 
             border-radius: 8px; 
-            cursor: pointer; 
+            cursor: not-allowed; 
             margin-top: 10px; 
             font-weight: bold;
+        }
+        button.active { 
+            background-color: #4CAF50; 
+            cursor: pointer; 
         }
         video { display: none; } 
         canvas { 
@@ -46,9 +50,9 @@
 <body>
     <h2>35mm 小白球距離偵測</h2>
     <div class="panel">
-        <p>系統狀態: <span id="status" style="color: #FFEB3B;">等待啟動</span></p>
+        <p>系統狀態: <span id="status" style="color: #FFEB3B;">正在下載 OpenCV 大檔案 (約 8MB)...</span></p>
         <p style="font-size: 24px; color: #4CAF50; margin: 5px 0;">距離: <span id="distance">-</span> cm</p>
-        <button id="startBtn" onclick="startCamera()">【點擊啟動 AI 視覺】</button>
+        <button id="startBtn" onclick="startCamera()" disabled>等待 OpenCV 載入中...</button>
     </div>
     
     <video id="videoInput" autoplay playsinline muted></video>
@@ -62,44 +66,40 @@
         let canvas = document.getElementById('canvasOutput');
         let ctx = canvas.getContext('2d');
         let streaming = false;
+        let opencvReady = false;
+
+        // 當 OpenCV.js 成功載入後會自動呼叫這個函數
+        function onOpenCvReady() {
+            opencvReady = true;
+            let statusEl = document.getElementById('status');
+            let btnEl = document.getElementById('startBtn');
+            
+            statusEl.innerText = 'OpenCV 載入完成！請點擊按鈕';
+            statusEl.style.color = '#4CAF50';
+            
+            btnEl.innerText = '【點擊啟動相機與 AI】';
+            btnEl.className = 'active';
+            btnEl.disabled = false;
+        }
 
         function startCamera() {
-            document.getElementById('status').innerText = '正在啟動相機...';
+            if (!opencvReady) {
+                alert('OpenCV 尚未載入完成，請稍候再試');
+                return;
+            }
+
+            document.getElementById('status').innerText = '正在要求相機權限...';
             document.getElementById('startBtn').disabled = true;
 
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
             .then(function(stream) {
-                video.srcObject = stream;
-                video.play();
-                
-                video.addEventListener('loadedmetadata', () => {
-                    if (!streaming) {
-                        canvas.width = video.videoWidth || 640;
-                        canvas.height = video.videoHeight || 480;
-                        streaming = true;
-                        document.getElementById('startBtn').style.display = 'none';
-                        document.getElementById('status').innerText = '相機運行中 (等待 OpenCV...)';
-                        document.getElementById('status').style.color = '#4CAF50';
-                        requestAnimationFrame(processVideo);
-                    }
-                });
+                initVideo(stream);
             })
             .catch(function(err) {
+                // 備用方案：如果後置鏡頭失敗，改抓預設鏡頭
                 navigator.mediaDevices.getUserMedia({ video: true, audio: false })
                 .then(function(stream) {
-                    video.srcObject = stream;
-                    video.play();
-                    video.addEventListener('loadedmetadata', () => {
-                        if (!streaming) {
-                            canvas.width = video.videoWidth || 640;
-                            canvas.height = video.videoHeight || 480;
-                            streaming = true;
-                            document.getElementById('startBtn').style.display = 'none';
-                            document.getElementById('status').innerText = '相機運行中 (預設鏡頭)';
-                            document.getElementById('status').style.color = '#4CAF50';
-                            requestAnimationFrame(processVideo);
-                        }
-                    });
+                    initVideo(stream);
                 })
                 .catch(function(e) {
                     document.getElementById('status').innerText = '相機失敗: ' + e.message;
@@ -109,17 +109,27 @@
             });
         }
 
+        function initVideo(stream) {
+            video.srcObject = stream;
+            video.play();
+            
+            video.addEventListener('loadedmetadata', () => {
+                if (!streaming) {
+                    canvas.width = video.videoWidth || 640;
+                    canvas.height = video.videoHeight || 480;
+                    streaming = true;
+                    document.getElementById('startBtn').style.display = 'none';
+                    document.getElementById('status').innerText = 'AI 視覺辨識運作中';
+                    document.getElementById('status').style.color = '#4CAF50';
+                    requestAnimationFrame(processVideo);
+                }
+            });
+        }
+
         function processVideo() {
             if (!streaming) return;
 
-            // 🛡️ 關鍵保護：如果 OpenCV 還沒完全載入好，先略過這幀，避免畫面死當
-            if (typeof cv === 'undefined' || !cv.Mat || !cv.imshow) {
-                requestAnimationFrame(processVideo);
-                return;
-            }
-
             try {
-                // 如果相機還沒準備好寬高，直接進入下一幀
                 if (video.videoWidth === 0 || video.videoHeight === 0) {
                     requestAnimationFrame(processVideo);
                     return;
