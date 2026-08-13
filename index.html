@@ -2,310 +2,131 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>35mm 物件 ROI 鎖定測距</title>
-    <script async src="https://docs.opencv.org/4.9.0/opencv.js" type="text/javascript"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI 手臂 - 白色圓球測距系統</title>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #121212; color: #fff; margin: 0; padding: 15px; }
-        h1 { font-size: 1.3rem; margin: 10px 0 5px 0; color: #00ffcc; }
-        .canvas-container { position: relative; width: 100%; max-width: 480px; margin: 10px auto; background: #000; border-radius: 12px; overflow: hidden; border: 2px solid #00ffcc; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        video { display: none; }
-        canvas { position: relative; width: 100%; height: auto; display: block; }
-        
-        #status { font-size: 0.95rem; font-weight: bold; color: #ffcc00; margin: 5px 0; padding: 10px; background: rgba(255,204,0,0.15); border: 1px solid #ffcc00; border-radius: 8px; word-break: break-all; }
-        #status.ready { color: #00ffcc; background: rgba(0,255,204,0.1); border-color: #00ffcc; }
-
-        .btn-group { display: flex; justify-content: center; gap: 10px; margin-top: 10px; }
-        .btn { background: #00ffcc; color: #121212; border: none; padding: 12px 20px; font-size: 1rem; font-weight: bold; border-radius: 25px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,255,204,0.3); }
-        .btn-lock { background: #ffcc00; box-shadow: 0 2px 8px rgba(255,204,0,0.4); animation: pulse 1.5s infinite; }
-        .btn:active { opacity: 0.8; }
-        
-        @keyframes pulse {
-            0% { transform: scale(1); }
-            50% { transform: scale(1.03); }
-            100% { transform: scale(1); }
-        }
-
-        .hint { font-size: 0.85rem; color: #aaa; margin-top: 10px; line-height: 1.4; }
+        body { margin: 0; text-align: center; background-color: #222; color: white; font-family: sans-serif; }
+        video { display: none; } /* 隱藏原始影片，只顯示畫布 */
+        canvas { width: 100%; max-width: 600px; border: 2px solid #4CAF50; }
+        .panel { padding: 10px; }
     </style>
 </head>
 <body>
-
-    <h1>35mm 物件 ROI 鎖定測距</h1>
-    <div id="status">⏳ 正在載入視覺演算法...</div>
-
-    <div class="canvas-container">
-        <video id="videoInput" playsinline muted webkit-playsinline></video>
-        <canvas id="canvasOutput"></canvas>
+    <h2>小白球距離偵測 (35mm)</h2>
+    <div class="panel">
+        <p>狀態: <span id="status">等待 OpenCV 載入...</span></p>
+        <p style="font-size: 24px; color: #4CAF50;">距離: <span id="distance">-</span> cm</p>
     </div>
-
-    <div class="btn-group">
-        <button class="btn btn-lock" id="lockBtn">🔒 鎖定目標物 (15cm 校正)</button>
-        <button class="btn" id="switchBtn">切換鏡頭</button>
-    </div>
-
-    <div class="hint" id="hintText">
-        💡 <b>鎖定步驟</b>：<br>
-        1. 拿尺將 35mm 物件放置於距鏡頭 <b>15 公分</b> 處。<br>
-        2. 移動手機，將物件放入<b>畫面上中央黃色準心框</b>內。<br>
-        3. 按下「<b>🔒 鎖定目標物 (15cm 校正)</b>」。
-    </div>
+    
+    <video id="videoInput" autoplay playsinline></video>
+    <canvas id="canvasOutput"></canvas>
 
     <script>
-        const video = document.getElementById('videoInput');
-        const canvas = document.getElementById('canvasOutput');
-        const ctx = canvas.getContext('2d');
-        const statusText = document.getElementById('status');
-        const lockBtn = document.getElementById('lockBtn');
-        const switchBtn = document.getElementById('switchBtn');
-        const hintText = document.getElementById('hintText');
+        // === 系統參數設定 ===
+        const KNOWN_WIDTH = 3.5; // 小白球的真實直徑 (公分)
+        let FOCAL_LENGTH = 500;  // 預設焦距常數 (請記得進行 30cm 校正)
+        
+        let video = document.getElementById('videoInput');
+        let canvas = document.getElementById('canvasOutput');
+        let ctx = canvas.getContext('2d');
+        let streaming = false;
 
-        let currentStream = null;
-        let useFacingMode = "environment";
-        let isCvReady = false;
-
-        let isLocked = false;
-        const TARGET_SIZE_CM = 3.5;       // 35mm = 3.5cm
-        const CALIBRATE_DIST_CM = 15.0;   // 基準校正距離 15cm
-        let focalLength = 550;
-
-        let targetCenter = { x: 0, y: 0 };
-        let smoothDistance = 0;
-
-        window.onOpenCvReady = () => {
-            statusText.innerText = "🎯 請將 35mm 物件對準中央框進行鎖定";
-            isCvReady = true;
+        function onOpenCvReady() {
+            document.getElementById('status').innerText = 'OpenCV 載入完成，啟動相機中...';
             startCamera();
-        };
-
-        if (typeof cv !== 'undefined' && cv.Mat) {
-            window.onOpenCvReady();
-        } else {
-            Module = { onRuntimeInitialized: window.onOpenCvReady };
         }
 
-        async function startCamera() {
-            if (currentStream) {
-                currentStream.getTracks().forEach(track => track.stop());
-            }
-
-            try {
-                const constraints = {
-                    video: { facingMode: useFacingMode, width: { ideal: 640 }, height: { ideal: 480 } },
-                    audio: false
-                };
-                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
-                video.srcObject = currentStream;
-                await video.play();
-
-                canvas.width = video.videoWidth || 640;
-                canvas.height = video.videoHeight || 480;
-
-                processVideo();
-            } catch (err) {
-                statusText.innerText = "❌ 無法存取相機權限，請用 Chrome 開啟。";
-            }
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: 640, height: 480 }, 
+                audio: false 
+            })
+            .then(function(stream) {
+                video.srcObject = stream;
+                video.play();
+                video.addEventListener('canplay', () => {
+                    if (!streaming) {
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        streaming = true;
+                        document.getElementById('status').innerText = '系統運作中';
+                        requestAnimationFrame(processVideo);
+                    }
+                });
+            })
+            .catch(function(err) {
+                console.error("相機啟動失敗: ", err);
+                document.getElementById('status').innerText = '無法存取相機';
+            });
         }
 
         function processVideo() {
-            let src = new cv.Mat(canvas.height, canvas.width, cv.CV_8UC4);
+            if (!streaming) return;
+
+            let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+            let cap = new cv.VideoCapture(video);
+            cap.read(src);
+
             let hsv = new cv.Mat();
+            cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
+            cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+
+            // === 修改 1：追蹤「白色」的 HSV 範圍 ===
+            // OpenCV 的 HSV 範圍是 H: 0~180, S: 0~255, V: 0~255
+            // 白色的特徵：飽和度(S)極低，亮度(V)極高
+            let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 180, 0]);     // 最暗的白
+            let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 50, 255, 0]); // 最亮的白
+            
             let mask = new cv.Mat();
+            cv.inRange(hsv, low, high, mask);
+
+            // 為了減少反光或白牆的雜訊，可以對遮罩進行一點模糊處理
+            cv.GaussianBlur(mask, mask, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+
             let contours = new cv.MatVector();
             let hierarchy = new cv.Mat();
-            
-            let ksize = new cv.Size(5, 5);
-            let M = cv.getStructuringElement(cv.MORPH_RECT, ksize);
+            cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-            function nextFrame() {
-                if (!isCvReady || video.paused || video.ended) return;
-
-                try {
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    src.data.set(imageData.data);
-
-                    if (useFacingMode === "user") {
-                        cv.flip(src, src, 1);
-                    }
-
-                    // 中央 ROI 區域大小 (160x160 px)
-                    const roiBoxSize = 160;
-                    const roiX = Math.floor((canvas.width - roiBoxSize) / 2);
-                    const roiY = Math.floor((canvas.height - roiBoxSize) / 2);
-
-                    if (!isLocked) {
-                        // === 1. 未鎖定狀態：繪製中央黃色對焦準心框 ===
-                        let p1 = new cv.Point(roiX, roiY);
-                        let p2 = new cv.Point(roiX + roiBoxSize, roiY + roiBoxSize);
-                        cv.rectangle(src, p1, p2, [255, 204, 0, 255], 3);
-
-                        // 畫十字準心
-                        let cx = Math.floor(canvas.width / 2);
-                        let cy = Math.floor(canvas.height / 2);
-                        cv.line(src, new cv.Point(cx - 15, cy), new cv.Point(cx + 15, cy), [255, 204, 0, 255], 2);
-                        cv.line(src, new cv.Point(cx, cy - 15), new cv.Point(cx, cy + 15), [255, 204, 0, 255], 2);
-
-                        statusText.innerText = "🎯 請將物件放入中央框內 (距離 15cm)";
-
-                    } else {
-                        // === 2. 已鎖定狀態：全區域 / 局部追蹤物件 ===
-                        cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
-                        cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-
-                        // 寬鬆高亮白色區域篩選
-                        let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 140, 0]);
-                        let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 80, 255, 255]);
-                        cv.inRange(hsv, low, high, mask);
-                        low.delete(); high.delete();
-
-                        cv.morphologyEx(mask, mask, cv.MORPH_OPEN, M);
-                        cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, M);
-
-                        cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-                        let bestIndex = -1;
-                        let minCenterDist = 99999;
-                        let bestWidthPixels = 0;
-
-                        for (let i = 0; i < contours.size(); ++i) {
-                            let cnt = contours.get(i);
-                            let area = cv.contourArea(cnt);
-
-                            if (area > 150 && area < (canvas.width * canvas.height * 0.4)) {
-                                let rect = cv.boundingRect(cnt);
-                                let cntCenterX = rect.x + rect.width / 2;
-                                let cntCenterY = rect.y + rect.height / 2;
-
-                                // 搜尋距離上一次目標位置最近的輪廓 (穩定追蹤機制)
-                                let distToLast = Math.hypot(cntCenterX - targetCenter.x, cntCenterY - targetCenter.y);
-
-                                if (distToLast < minCenterDist) {
-                                    minCenterDist = distToLast;
-                                    bestIndex = i;
-                                    bestWidthPixels = Math.max(rect.width, rect.height);
-                                }
-                            }
-                            cnt.delete();
-                        }
-
-                        if (bestIndex !== -1 && minCenterDist < 250) {
-                            let targetCnt = contours.get(bestIndex);
-                            let rect = cv.boundingRect(targetCnt);
-
-                            // 更新目標中心座標供下一幀追蹤使用
-                            targetCenter.x = rect.x + rect.width / 2;
-                            targetCenter.y = rect.y + rect.height / 2;
-
-                            // 繪製綠色追蹤邊框
-                            let p1 = new cv.Point(rect.x, rect.y);
-                            let p2 = new cv.Point(rect.x + rect.width, rect.y + rect.height);
-                            cv.rectangle(src, p1, p2, [0, 255, 204, 255], 3);
-
-                            // 計算距離 D = (W * f) / w
-                            let rawDistance = (TARGET_SIZE_CM * focalLength) / bestWidthPixels;
-                            smoothDistance = smoothDistance === 0 ? rawDistance : (smoothDistance * 0.7 + rawDistance * 0.3);
-
-                            let text = `${Math.round(smoothDistance)} cm`;
-                            cv.putText(src, text, new cv.Point(rect.x, Math.max(rect.y - 12, 30)), cv.FONT_HERSHEY_SIMPLEX, 0.9, [0, 255, 204, 255], 2);
-
-                            statusText.innerText = `🟢 追蹤中：${Math.round(smoothDistance)} cm`;
-                            targetCnt.delete();
-                        } else {
-                            statusText.innerText = "🔍 搜尋鎖定目標中，請將物件移回視野...";
-                        }
-                    }
-
-                    cv.imshow('canvasOutput', src);
-
-                } catch (err) {
-                    console.log("Frame Error: ", err);
-                }
-
-                setTimeout(nextFrame, 30);
-            }
-
-            setTimeout(nextFrame, 30);
-        }
-
-        // 鎖定按鈕邏輯
-        lockBtn.addEventListener('click', () => {
-            if (!isLocked) {
-                let src = cv.imread('canvasOutput');
-                let hsv = new cv.Mat();
-                let mask = new cv.Mat();
-                let contours = new cv.MatVector();
-                let hierarchy = new cv.Mat();
-
-                let roiBoxSize = 160;
-                let roiX = Math.floor((canvas.width - roiBoxSize) / 2);
-                let roiY = Math.floor((canvas.height - roiBoxSize) / 2);
-
-                let rectROI = new cv.Rect(roiX, roiY, roiBoxSize, roiBoxSize);
-                let srcROI = src.roi(rectROI);
-
-                cv.cvtColor(srcROI, hsv, cv.COLOR_RGBA2RGB);
-                cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-
-                let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 140, 0]);
-                let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 80, 255, 255]);
-                cv.inRange(hsv, low, high, mask);
-
-                cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
+            if (contours.size() > 0) {
                 let maxArea = 0;
-                let roiPixelWidth = 0;
-
-                for (let i = 0; i < contours.size(); ++i) {
-                    let cnt = contours.get(i);
-                    let area = cv.contourArea(cnt);
-                    if (area > maxArea && area > 100) {
+                let maxContourIndex = -1;
+                for (let i = 0; i < contours.size(); i++) {
+                    let area = cv.contourArea(contours.get(i));
+                    if (area > maxArea) {
                         maxArea = area;
-                        let rect = cv.boundingRect(cnt);
-                        roiPixelWidth = Math.max(rect.width, rect.height);
+                        maxContourIndex = i;
                     }
-                    cnt.delete();
                 }
 
-                // 釋放截圖資源
-                src.delete(); hsv.delete(); mask.delete(); contours.delete(); hierarchy.delete(); srcROI.delete(); low.delete(); high.delete();
-
-                if (roiPixelWidth > 0) {
-                    // === 核心修正：正確的常數計算語法 ===
-                    focalLength = (roiPixelWidth * CALIBRATE_DIST_CM) / TARGET_SIZE_CM;
+                // 過濾雜訊：面積大於 500 才認定是球
+                if (maxArea > 500) {
+                    // === 修改 2：改用「最小包圍圓」來計算像素寬度 ===
+                    let circle = cv.minEnclosingCircle(contours.get(maxContourIndex));
                     
-                    targetCenter.x = canvas.width / 2;
-                    targetCenter.y = canvas.height / 2;
-                    isLocked = true;
+                    // 圓的直徑就是我們在畫面上看到的像素寬度 (P)
+                    let pixelWidth = circle.radius * 2;
 
-                    statusText.className = "ready";
-                    statusText.innerText = "✅ 目標已鎖定！開始實時測距";
+                    // 利用相似三角形求出距離
+                    let distance = (KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth;
 
-                    lockBtn.classList.remove("btn-lock");
-                    lockBtn.style.animation = "none";
-                    lockBtn.innerText = "🔓 解鎖 / 重新鎖定";
+                    // 更新網頁 UI
+                    document.getElementById('distance').innerText = distance.toFixed(1);
 
-                    hintText.innerHTML = "💡 <b>測距進行中</b>：可以任意移動手機或物件。若要更換物件，請按下「解鎖 / 重新鎖定」。";
-                } else {
-                    alert("中央對焦框內未感應到 35mm 物件！請將物件確實放在中央框內再按下鎖定。");
+                    // 在畫面上畫出「圓形追蹤框」與「距離資訊」
+                    cv.circle(src, circle.center, circle.radius, [0, 255, 255, 255], 3); // 畫黃色的圓
+                    cv.circle(src, circle.center, 2, [255, 0, 0, 255], 3); // 畫出圓心紅點
+                    cv.putText(src, distance.toFixed(1) + "cm", new cv.Point(circle.center.x, circle.center.y - circle.radius - 10), cv.FONT_HERSHEY_SIMPLEX, 0.8, [0, 255, 255, 255], 2);
                 }
-            } else {
-                isLocked = false;
-                smoothDistance = 0;
-                statusText.className = "";
-                statusText.innerText = "🎯 請將物件放入中央框內 (距離 15cm)";
-                lockBtn.classList.add("btn-lock");
-                lockBtn.innerText = "🔒 鎖定目標物 (15cm 校正)";
             }
-        });
 
-        switchBtn.addEventListener('click', () => {
-            useFacingMode = useFacingMode === "user" ? "environment" : "user";
-            isLocked = false;
-            lockBtn.classList.add("btn-lock");
-            lockBtn.innerText = "🔒 鎖定目標物 (15cm 校正)";
-            startCamera();
-        });
+            cv.imshow('canvasOutput', src);
+
+            // 釋放記憶體
+            src.delete(); hsv.delete(); low.delete(); high.delete(); mask.delete(); contours.delete(); hierarchy.delete();
+
+            requestAnimationFrame(processVideo);
+        }
     </script>
 </body>
 </html>
