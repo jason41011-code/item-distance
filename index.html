@@ -3,20 +3,53 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 手臂 - 白色圓球測距系統 (相機修復版)</title>
+    <title>AI 視覺測距系統 - 穩健版</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     <style>
-        body { margin: 0; text-align: center; background-color: #222; color: white; font-family: sans-serif; }
-        video { display: none; } /* 隱藏原始影片，只顯示畫布 */
-        canvas { width: 100%; max-width: 600px; border: 2px solid #4CAF50; background-color: #000; }
-        .panel { padding: 10px; }
+        body { 
+            margin: 0; 
+            text-align: center; 
+            background-color: #1a1a1a; 
+            color: white; 
+            font-family: sans-serif; 
+            padding: 10px;
+        }
+        .panel { 
+            background: #2a2a2a; 
+            padding: 15px; 
+            border-radius: 10px; 
+            max-width: 600px; 
+            margin: 0 auto 10px auto; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        button { 
+            background-color: #4CAF50; 
+            color: white; 
+            border: none; 
+            padding: 12px 24px; 
+            font-size: 18px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            margin-top: 10px; 
+            font-weight: bold;
+        }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        video { display: none; } 
+        canvas { 
+            width: 100%; 
+            max-width: 600px; 
+            border: 2px solid #4CAF50; 
+            border-radius: 8px;
+            background-color: #000; 
+        }
     </style>
 </head>
 <body>
-    <h2>小白球距離偵測 (35mm)</h2>
+    <h2>35mm 小白球測距系統</h2>
     <div class="panel">
-        <p>狀態: <span id="status" style="color: #FFEB3B;">等待 OpenCV 載入...</span></p>
-        <p style="font-size: 24px; color: #4CAF50;">距離: <span id="distance">-</span> cm</p>
+        <p>系統狀態: <span id="status" style="color: #FFEB3B;">載入 OpenCV 中...</span></p>
+        <p style="font-size: 24px; color: #4CAF50; margin: 5px 0;">距離: <span id="distance">-</span> cm</p>
+        <button id="startBtn" onclick="startCamera()" disabled>載入中請稍候...</button>
     </div>
     
     <video id="videoInput" autoplay playsinline muted></video>
@@ -24,73 +57,68 @@
 
     <script>
         // === 系統參數設定 ===
-        const KNOWN_WIDTH = 3.5; // 小白球的真實直徑 (公分)
-        let FOCAL_LENGTH = 500;  // 預設焦距常數 (請記得進行 30cm 校正)
+        const KNOWN_WIDTH = 3.5; // 小白球直徑 3.5 公分
+        let FOCAL_LENGTH = 500;  // 預設焦距常數 (可後續校正)
         
         let video = document.getElementById('videoInput');
         let canvas = document.getElementById('canvasOutput');
         let ctx = canvas.getContext('2d');
         let streaming = false;
 
+        // 當 OpenCV.js 載入完成時觸發
         function onOpenCvReady() {
-            document.getElementById('status').innerText = 'OpenCV 載入完成，要求相機權限中...';
-            startCamera();
+            let statusEl = document.getElementById('status');
+            let btnEl = document.getElementById('startBtn');
+            statusEl.innerText = 'OpenCV 準備就緒';
+            statusEl.style.color = '#4CAF50';
+            btnEl.innerText = '點擊啟動相機';
+            btnEl.disabled = false; // 解除按鈕封印
         }
 
+        // 點擊按鈕後執行，徹底規避自動播放與權限衝突
         function startCamera() {
-            // 🛠️ 修正重點：改用 ideal，避免發生 OverconstrainedError
+            document.getElementById('status').innerText = '正在要求相機權限...';
+            document.getElementById('startBtn').disabled = true;
+
+            // 採用最安全的彈性設定，完美避開 OverconstrainedError
             let constraints = {
-                video: { 
-                    facingMode: 'environment', // 優先使用後置鏡頭
-                    width: { ideal: 640 }, 
-                    height: { ideal: 480 } 
-                },
+                video: { facingMode: 'environment' },
                 audio: false
             };
 
             navigator.mediaDevices.getUserMedia(constraints)
             .then(function(stream) {
-                video.srcObject = stream;
-                video.play();
-                
-                video.addEventListener('loadedmetadata', () => {
-                    if (!streaming) {
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
-                        streaming = true;
-                        document.getElementById('status').innerText = '系統運作中';
-                        document.getElementById('status').style.color = '#4CAF50';
-                        requestAnimationFrame(processVideo);
-                    }
-                });
+                initVideo(stream);
             })
             .catch(function(err) {
-                console.error("相機啟動失敗: ", err);
-                // 如果後置鏡頭失敗，嘗試不指定 facingMode 再試一次（相容性備案）
-                fallbackCamera();
+                console.warn("後置鏡頭要求失敗，嘗試預設相機...", err);
+                // 備用方案：不指定特定鏡頭，直接抓預設
+                navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+                .then(function(stream) {
+                    initVideo(stream);
+                })
+                .catch(function(e) {
+                    document.getElementById('status').innerText = '相機開啟失敗: ' + e.name;
+                    document.getElementById('status').style.color = '#F44336';
+                    document.getElementById('startBtn').disabled = false;
+                });
             });
         }
 
-        // 備用相機啟動方案（若後置鏡頭被鎖定，改用預設鏡頭）
-        function fallbackCamera() {
-            navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-            .then(function(stream) {
-                video.srcObject = stream;
-                video.play();
-                video.addEventListener('loadedmetadata', () => {
-                    if (!streaming) {
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
-                        streaming = true;
-                        document.getElementById('status').innerText = '系統運作中 (備用鏡頭)';
-                        document.getElementById('status').style.color = '#4CAF50';
-                        requestAnimationFrame(processVideo);
-                    }
-                });
-            })
-            .catch(function(err) {
-                document.getElementById('status').innerText = '相機啟動失敗: ' + err.name;
-                document.getElementById('status').style.color = '#F44336';
+        function initVideo(stream) {
+            video.srcObject = stream;
+            video.play();
+            
+            video.addEventListener('loadedmetadata', () => {
+                if (!streaming) {
+                    canvas.width = video.videoWidth || 640;
+                    canvas.height = video.videoHeight || 480;
+                    streaming = true;
+                    document.getElementById('startBtn').style.display = 'none'; // 成功後隱藏按鈕
+                    document.getElementById('status').innerText = '系統運作中';
+                    document.getElementById('status').style.color = '#4CAF50';
+                    requestAnimationFrame(processVideo);
+                }
             });
         }
 
@@ -112,7 +140,7 @@
             cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
             cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
 
-            // 追蹤白色的 HSV 範圍
+            // 白色球的 HSV 篩選範圍（低飽和、高亮度）
             let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 150, 0]);     
             let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 60, 255, 0]); 
             
@@ -135,6 +163,7 @@
                     }
                 }
 
+                // 面積過濾雜訊
                 if (maxArea > 500) {
                     let circle = cv.minEnclosingCircle(contours.get(maxContourIndex));
                     let pixelWidth = circle.radius * 2;
@@ -142,8 +171,9 @@
 
                     document.getElementById('distance').innerText = distance.toFixed(1);
 
-                    cv.circle(src, circle.center, circle.radius, [0, 255, 255, 255], 3);
-                    cv.circle(src, circle.center, 2, [255, 0, 0, 255], 3);
+                    // 在畫面上繪製追蹤資訊
+                    cv.circle(src, circle.center, circle.radius, [0, 255, 255, 255], 3); // 黃圈
+                    cv.circle(src, circle.center, 2, [255, 0, 0, 255], 3); // 紅心點
                     cv.putText(src, distance.toFixed(1) + "cm", new cv.Point(circle.center.x, circle.center.y - circle.radius - 10), cv.FONT_HERSHEY_SIMPLEX, 0.8, [0, 255, 255, 255], 2);
                 }
             }
